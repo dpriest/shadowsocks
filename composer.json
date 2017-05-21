@@ -1,0 +1,16 @@
+{
+    "name": "dpriest/shadowsocks",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "dpriest",
+            "email": "wenhaoz100@gmail.com"
+        }
+    ],
+    "keywords" : ["swoole", "proxy", "http", "https", "socks5"],
+    "autoload": {
+        "psr-4": {
+            "SS\\": "./src/"
+        }
+    }
+}
