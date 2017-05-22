@@ -3,6 +3,7 @@ namespace SS;
 require_once __DIR__ . '/Util/helpers.php';
 
 use Swoole\Buffer;
+use Swoole\Client;
 use Swoole\Server;
 
 class ShadowServer
@@ -11,8 +12,8 @@ class ShadowServer
     const ADDRTYPE_HOST = 0x03;
     const ADDRTYPE_IPV6 = 0x04;
 
-    /** @var Backend */
-    private $clients = [];
+    /** @var Backend[] */
+    private $backends = [];
 
     public function start()
     {
@@ -47,20 +48,20 @@ class ShadowServer
         sys_echo("connecting ......");
         $backend              = new Backend();
         $backend->isConnected = true;
-        $backend->status      = Backend::STATUS_INIT;
+        $backend->status      = Backend::STATUS_BIND;
         $backend->full        = new Buffer();
-        $this->clients[$fd]   = $backend;
+        $this->backends[$fd]   = $backend;
     }
 
     public function onReceive(Server $server, $fd, $fromId, $data)
     {
-        /** @var Backend $backend */
-        $backend = $this->clients[$fd];
+        $backend = $this->backends[$fd];
         // 先解密数据
         $data = Encryptor::decrypt($data);
         $buffer  = new Buffer();
         $buffer->append($data);
-        if (Backend::STATUS_INIT == $backend->status) {
+        sys_echo("backend status:" . $backend->status);
+        if (Backend::STATUS_BIND == $backend->status) {
             // 解析socket5头
             $headerData = $this->parseSocket5Header($buffer);
             // 解析头部出错，则关闭连接
@@ -72,15 +73,49 @@ class ShadowServer
             // 头部长度
             $headerLen = $headerData['header_length'];
             // 解析得到实际请求地址及端口
-            $host = $headerData['dest_addr'];
+            $addr = $headerData['dest_addr'];
             $port = $headerData['dest_port'];
-            $address = "tcp://$host:$port";
-            if (!$host || !$port) {
+            if (!$addr || !$port) {
                 $server->close($fd);
                 return;
             }
-            sys_echo("connecting:" . $address);
-            $server->close($fd);
+
+            $remote = new Client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_ASYNC);
+
+            $remote->on('connect', function (Client $cli) use ($backend, $server, $fd, $remote) {
+                sys_echo('change backend to connect');
+                $backend->status = Backend::STATUS_CONNECT;
+                $backend->remote = $remote;
+            });
+            $remote->on('error', function (Client $cli) use ($server, $fd) {
+                sys_echo("Error: " . $cli->errCode);
+                $server->close($fd);
+            });
+            $remote->on('close', function (Client $cli) use ($server, $fd, $backend) {
+                $backend->remote = null;
+                $server->close($fd);
+            });
+            $remote->on('receive', function (Client $cli, $data) use ($server, $fd, $backend) {
+                if ($backend->isConnected) {
+                    $server->send($fd, $data);
+                }
+            });
+            if (self::ADDRTYPE_HOST == $headerData['addr_type']) {
+                swoole_async_dns_lookup($addr, function ($host, $ip) use ($remote, $port, $backend, $buffer) {
+                    sys_echo('connecting: ' . $ip . ":" . $port);
+                    $remote->connect($ip, $port);
+                    if ($backend->remote === null) {
+                        sys_echo("remote connection has been closed.");
+                        return;
+                    }
+
+                    $sendByteCount = $backend->request();
+                    sys_echo("data length:" . $backend->full->length . ' send byte count:' . $sendByteCount);
+                });
+            } else {
+                sys_echo('connecting: ' . $addr . ":" . $port);
+                $remote->connect($addr, $port);
+            }
             $buffer->clear();
         }
     }
@@ -124,8 +159,12 @@ class ShadowServer
         ];
     }
 
-    public function onClose()
+    public function onClose(Server $server, $fd, $fromId)
     {
         sys_echo("closing .....");
+
+        $client = $this->backends[$fd];
+        if ($client->remote) $client->remote->close();
+        $client->isConnected = false;
     }
 }

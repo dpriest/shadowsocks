@@ -30,7 +30,7 @@ class Backend
 
     const CMD_UDP = 0x03;
 
-    public $isConnected = true;
+    public $isConnected = false;
 
     public $data = null;
 
@@ -45,8 +45,6 @@ class Backend
 
     public $sendComplete = false;
 
-    public $atyp;
-    
     public $startTime;
     
     public $endTime;
