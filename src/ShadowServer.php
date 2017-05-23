@@ -46,82 +46,72 @@ class ShadowServer
     public function onConnect(Server $server, $fd, $fromId)
     {
         sys_echo("connecting ......");
-        $backend              = new Backend();
-        $backend->isConnected = true;
-        $backend->status      = Backend::STATUS_BIND;
-        $backend->full        = new Buffer();
-        $this->backends[$fd]   = $backend;
     }
 
     public function onReceive(Server $server, $fd, $fromId, $data)
     {
-        $backend = $this->backends[$fd];
+        $backend = new Backend();
+        $this->backends[$fd] = $backend;
         // 先解密数据
         $data = Encryptor::decrypt($data);
         $buffer  = new Buffer();
         $buffer->append($data);
-        sys_echo("backend status:" . $backend->status);
-        if (Backend::STATUS_BIND == $backend->status) {
-            // 解析socket5头
-            $headerData = $this->parseSocket5Header($buffer);
-            // 解析头部出错，则关闭连接
-            if(!$headerData)
-            {
-                $server->close($fd);
-                return;
-            }
-            // 头部长度
-            $headerLen = $headerData['header_length'];
-            // 解析得到实际请求地址及端口
-            $addr = $headerData['dest_addr'];
-            $port = $headerData['dest_port'];
-            if (!$addr || !$port) {
-                $server->close($fd);
-                return;
-            }
+        // 解析socket5头
+        $headerData = $this->parseSocket5Header($buffer);
+        // 解析头部出错，则关闭连接
+        if(!$headerData)
+        {
+            $server->close($fd);
+            return;
+        }
+        // 头部长度
+        $headerLen = $headerData['header_length'];
+        // 解析得到实际请求地址及端口
+        $addr = $headerData['dest_addr'];
+        $port = $headerData['dest_port'];
+        if (!$addr || !$port) {
+            $server->close($fd);
+            return;
+        }
 
-            $remote = new Client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_ASYNC);
+        $remote = new Client(SWOOLE_SOCK_TCP, SWOOLE_SOCK_ASYNC);
 
-            $remote->on('connect', function (Client $cli) use ($backend, $server, $fd, $remote) {
-                sys_echo('change backend to connect');
-                $backend->status = Backend::STATUS_CONNECT;
-                $backend->remote = $remote;
-            });
-            $remote->on('error', function (Client $cli) use ($server, $fd) {
-                sys_echo("Error: " . $cli->errCode);
-                $server->close($fd);
-            });
-            $remote->on('close', function (Client $cli) use ($server, $fd, $backend) {
-                $backend->remote = null;
-                $server->close($fd);
-            });
-            $remote->on('receive', function (Client $cli, $data) use ($server, $fd, $backend) {
-                if ($backend->isConnected) {
-                    $server->send($fd, $data);
+        $remote->on('connect', function (Client $cli) use ($backend, $remote) {
+            sys_echo('connect remote');
+            $backend->remote = $remote;
+        });
+        $remote->on('error', function (Client $cli) use ($server, $fd) {
+            sys_echo("Error: " . $cli->errCode);
+            $server->close($fd);
+        });
+        $remote->on('close', function (Client $cli) use ($backend, $remote) {
+            $backend->remote = null;
+        });
+        $remote->on('receive', function (Client $cli, $data) use ($server, $fd, $backend) {
+            if ($backend->isConnected) {
+                $server->send($fd, $data);
+            }
+        });
+        if (self::ADDRTYPE_HOST == $headerData['addr_type']) {
+            swoole_async_dns_lookup($addr, function ($host, $ip) use ($remote, $port, $backend, $server, $fd) {
+                $remote->connect($ip, $port);
+                $sendByteCount = $backend->request();
+                if ($sendByteCount === false) {
+                    var_dump($backend->full);
+                    sys_echo("data length:" . $backend->full->length . ' send byte count:' . $sendByteCount);
+                    $server->close($fd);
                 }
             });
-            if (self::ADDRTYPE_HOST == $headerData['addr_type']) {
-                swoole_async_dns_lookup($addr, function ($host, $ip) use ($remote, $port, $backend, $buffer) {
-                    sys_echo('connecting: ' . $ip . ":" . $port);
-                    $remote->connect($ip, $port);
-                    if ($backend->remote === null) {
-                        sys_echo("remote connection has been closed.");
-                        return;
-                    }
-
-                    $sendByteCount = $backend->request();
-                    sys_echo("data length:" . $backend->full->length . ' send byte count:' . $sendByteCount);
-                });
-            } else {
-                sys_echo('connecting: ' . $addr . ":" . $port);
-                $remote->connect($addr, $port);
-            }
-            $buffer->clear();
+        } else {
+            sys_echo('connecting: ' . $addr . ":" . $port);
+            $remote->connect($addr, $port);
         }
+        $buffer->clear();
     }
 
     /**
      * @param Buffer $buffer
+     * @return array
      */
     private function parseSocket5Header($buffer)
     {
@@ -146,10 +136,10 @@ class ShadowServer
                 break;
             case self::ADDRTYPE_IPV6:
                 echo "todo ipv6 not support yet\n";
-                return false;
+                return [];
             default:
                 echo "unsupported addrtype $addrType\n";
-                return false;
+                return [];
         }
         return [
             'addr_type' => $addrType,

@@ -14,12 +14,6 @@ use Swoole\Client;
  */
 class Backend
 {
-    const STATUS_INIT = 'init';
-
-    const STATUS_BIND = 'bind';
-
-    const STATUS_AUTH = 'auth';
-
     const STATUS_CONNECT = 'connect';
 
     const STATUS_COMPLETE = 'complete';
@@ -38,8 +32,6 @@ class Backend
      * @var \Swoole\Client
      */
     public $remote = null;
-
-    public $status;
 
     public $error;
 
